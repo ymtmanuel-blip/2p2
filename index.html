@@ -3,126 +3,77 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tauben-Cam Pro</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Tauben-Cam</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        body { background-color: #000; color: white; font-family: sans-serif; overflow: hidden; }
-        #canvasOverlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 30; cursor: crosshair; }
-        .video-wrapper { position: relative; width: 100vw; height: 100vh; }
-        #remoteVideo { width: 100%; height: 100%; object-fit: cover; z-index: 10; }
-        #localVideo { position: absolute; bottom: 20px; right: 20px; width: 30%; aspect-ratio: 9/16; border-radius: 1rem; border: 2px solid white; z-index: 20; object-fit: cover; }
+        body { margin: 0; background: black; overflow: hidden; font-family: sans-serif; }
+        #remoteVideo { width: 100vw; height: 100vh; object-fit: cover; }
+        #localVideo { position: absolute; bottom: 20px; right: 20px; width: 100px; height: 150px; border: 3px solid white; border-radius: 10px; z-index: 10; }
+        #canvas { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 20; }
+        #menu { position: absolute; top: 10px; left: 10px; z-index: 30; background: rgba(0,0,0,0.7); padding: 10px; color: white; border-radius: 8px; }
     </style>
 </head>
 <body>
 
-    <div class="video-wrapper">
-        <video id="remoteVideo" autoplay playsinline></video>
-        <video id="localVideo" autoplay playsinline muted></video>
-        <canvas id="canvasOverlay"></canvas>
-    </div>
+<div id="menu">
+    <div id="idStatus">ID laden...</div>
+    <input type="text" id="targetId" placeholder="ID eingeben" style="width:80px">
+    <button onclick="startCall()">Anrufen</button>
+</div>
 
-    <div id="ui" class="absolute top-4 left-4 z-40 space-y-2">
-        <div id="idDisplay" class="bg-black/50 p-3 rounded-lg border border-teal-500">ID: Wird geladen...</div>
-        <input id="peerIdInput" type="text" maxlength="4" placeholder="4-stellig" class="p-2 w-24 bg-gray-800 rounded text-black">
-        <button id="connectBtn" class="bg-blue-600 px-4 py-2 rounded">Verbinden</button>
-        <div id="scoreBoard" class="text-yellow-400 font-bold">Punkte: 0</div>
-        <div id="batteryBoard" class="text-gray-400">Akku: Lade...</div>
-    </div>
+<video id="remoteVideo" autoplay playsinline></video>
+<video id="localVideo" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
 
-    <script>
-        const remoteVideo = document.getElementById('remoteVideo');
-        const localVideo = document.getElementById('localVideo');
-        const canvas = document.getElementById('canvasOverlay');
-        const ctx = canvas.getContext('2d');
-        const scoreEl = document.getElementById('scoreBoard');
-        const batteryEl = document.getElementById('batteryBoard');
-        
-        let seeds = [];
-        let score = 0;
-        let peer;
-        let dataConn;
+<script>
+    const peer = new Peer(Math.floor(1000 + Math.random() * 9000).toString());
+    const remoteVid = document.getElementById('remoteVideo');
+    const localVid = document.getElementById('localVideo');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let seeds = [];
 
-        // PeerJS Konfiguration (benutzt eigenen Server falls nötig oder Public)
-        const shortId = Math.floor(1000 + Math.random() * 9000).toString();
-        peer = new Peer(shortId, {
-            host: '0.peerjs.com',
-            port: 443,
-            path: '/',
-            secure: true
+    // Kamera starten (Selfie)
+    navigator.mediaDevices.getUserMedia({video: {facingMode: "user"}, audio: true})
+        .then(stream => localVid.srcObject = stream);
+
+    peer.on('open', id => document.getElementById('idStatus').innerText = "Deine ID: " + id);
+
+    // Anruf empfangen
+    peer.on('call', call => {
+        navigator.mediaDevices.getUserMedia({video: true, audio: true}).then(stream => {
+            call.answer(stream);
+            call.on('stream', s => remoteVid.srcObject = s);
         });
+    });
 
-        peer.on('open', (id) => {
-            document.getElementById('idDisplay').innerText = `Deine ID: ${id}`;
+    // Anruf starten
+    function startCall() {
+        const id = document.getElementById('targetId').value;
+        navigator.mediaDevices.getUserMedia({video: true, audio: true}).then(stream => {
+            const call = peer.call(id, stream);
+            call.on('stream', s => remoteVid.srcObject = s);
         });
+    }
 
-        // Akkustatus senden
-        async function updateBattery() {
-            if ('getBattery' in navigator) {
-                const battery = await navigator.getBattery();
-                const level = Math.round(battery.level * 100);
-                batteryEl.innerText = `Akku: ${level}%`;
-                if (dataConn && dataConn.open) dataConn.send({ type: 'battery', level });
-            }
-        }
-        setInterval(updateBattery, 60000);
+    // Samen zeichnen
+    canvas.addEventListener('click', e => {
+        const seed = {x: e.clientX, y: e.clientY, time: Date.now()};
+        seeds.push(seed);
+        setTimeout(() => seeds = seeds.filter(s => s !== seed), 5000);
+    });
 
-        // Kamera starten
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true })
-            .then(stream => {
-                localVideo.srcObject = stream;
-            }).catch(e => console.error("Kamerafehler", e));
-
-        // Verbindung annehmen
-        peer.on('call', call => {
-            navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
-                call.answer(stream);
-                call.on('stream', remoteStream => remoteVideo.srcObject = remoteStream);
-            });
-            call.on('data', data => { if(data.type === 'battery') batteryEl.innerText = `Akku: ${data.level}%`; });
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        seeds.forEach(s => {
+            ctx.fillStyle = 'yellow';
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, 10, 0, Math.PI * 2);
+            ctx.fill();
         });
-
-        document.getElementById('connectBtn').onclick = () => {
-            const targetId = document.getElementById('peerIdInput').value;
-            navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
-                const call = peer.call(targetId, stream);
-                call.on('stream', remoteStream => remoteVideo.srcObject = remoteStream);
-                dataConn = peer.connect(targetId);
-            });
-        };
-
-        // Samen-Logik
-        canvas.addEventListener('click', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            
-            const hitIndex = seeds.findIndex(s => Math.hypot(s.x - x, s.y - y) < 40);
-            if(hitIndex > -1) {
-                seeds.splice(hitIndex, 1);
-                score += 10;
-                scoreEl.innerText = `Punkte: ${score}`;
-            } else {
-                const newSeed = { x, y };
-                seeds.push(newSeed);
-                setTimeout(() => seeds = seeds.filter(s => s !== newSeed), 5000);
-            }
-        });
-
-        function animate() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            seeds.forEach(s => {
-                ctx.fillStyle = '#fbbf24';
-                ctx.beginPath();
-                ctx.arc(s.x, s.y, 15, 0, Math.PI * 2);
-                ctx.fill();
-            });
-            requestAnimationFrame(animate);
-        }
-        animate();
-
-        window.onresize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
-        window.onresize();
-    </script>
+        requestAnimationFrame(draw);
+    }
+    draw();
+</script>
 </body>
 </html>
