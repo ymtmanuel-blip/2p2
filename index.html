@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tauben-Cam Pro & Spiel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { background-color: #0f172a; color: white; font-family: 'Inter', sans-serif; }
+        #canvasOverlay { pointer-events: auto; position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 20; cursor: crosshair; }
+        .video-container { position: relative; overflow: hidden; border-radius: 1rem; background: #000; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <header class="mb-6 flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold text-teal-400">🐦 Tauben-Cam Pro</h1>
+                <p class="text-gray-400 text-sm">Füttere sie & sammle Punkte!</p>
+            </div>
+            <div class="flex gap-2">
+                <div id="batteryBoard" class="bg-gray-800 px-4 py-2 rounded-full font-bold text-gray-400 border border-gray-600 hidden">
+                    Akku: --%
+                </div>
+                <div id="scoreBoard" class="bg-gray-800 px-4 py-2 rounded-full font-bold text-yellow-400 border border-yellow-600">
+                    Punkte: 0
+                </div>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-gray-800 p-4 rounded-2xl shadow-xl">
+                <div id="controls" class="space-y-2">
+                    <button id="startCam" class="w-full bg-teal-600 hover:bg-teal-500 p-3 rounded-lg font-bold">Tauben-Modus starten</button>
+                    <input id="peerIdInput" type="text" placeholder="ID eingeben..." class="w-full p-3 bg-gray-900 rounded-lg border border-gray-700">
+                    <button id="connectToPeer" class="w-full bg-blue-600 hover:bg-blue-500 p-3 rounded-lg font-bold">Verbinden</button>
+                </div>
+                <div id="status" class="mt-4 p-3 bg-gray-900 rounded-lg text-sm text-gray-400">Status: Bereit</div>
+            </div>
+
+            <div class="video-container aspect-video" id="viewArea">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <canvas id="canvasOverlay"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const startCamBtn = document.getElementById('startCam');
+        const connectBtn = document.getElementById('connectToPeer');
+        const videoEl = document.getElementById('remoteVideo');
+        const canvas = document.getElementById('canvasOverlay');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('scoreBoard');
+        const batteryEl = document.getElementById('batteryBoard');
+
+        let peer;
+        let dataConn = null; // Für Datenverbindung (Akku)
+        let seeds = [];
+        let score = 0;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playCooSound() {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(180, audioCtx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.3);
+        }
+
+        function playEatSound() {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.1);
+        }
+
+        function resizeCanvas() {
+            canvas.width = canvas.parentElement.offsetWidth;
+            canvas.height = canvas.parentElement.offsetHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        class Seed {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vy = Math.random() * 2 + 2;
+                this.size = 8;
+                this.color = '#fbbf24';
+            }
+            update() { this.y += this.vy; }
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            seeds.forEach((seed, index) => {
+                seed.update();
+                seed.draw();
+                if (seed.y > canvas.height) seeds.splice(index, 1);
+            });
+            requestAnimationFrame(animate);
+        }
+        animate();
+
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            let hit = false;
+            seeds.forEach((s, i) => {
+                const dist = Math.hypot(s.x - x, s.y - y);
+                if (dist < 30) {
+                    seeds.splice(i, 1);
+                    score += 10;
+                    scoreEl.innerText = `Punkte: ${score}`;
+                    playEatSound();
+                    hit = true;
+                }
+            });
+
+            if (!hit) {
+                seeds.push(new Seed(x, 10));
+                playCooSound();
+            }
+        });
+
+        async function initBatteryMonitoring(conn) {
+            if ('getBattery' in navigator) {
+                try {
+                    const battery = await navigator.getBattery();
+                    
+                    const sendBattery = () => {
+                        if (conn && conn.open) {
+                            conn.send({ type: 'battery', level: Math.round(battery.level * 100) });
+                        }
+                    };
+
+                    battery.addEventListener('levelchange', sendBattery);
+                    battery.addEventListener('chargingchange', sendBattery);
+                    // Initial senden
+                    sendBattery();
+                } catch(e) { console.error("Battery API error", e); }
+            }
+        }
+
+        peer = new Peer(); 
+        peer.on('open', (id) => { statusEl.innerText = `Deine ID: ${id}`; });
+
+        // Empfangen: Aufrufe und Daten
+        peer.on('call', (call) => {
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                .then(stream => {
+                    call.answer(stream);
+                    statusEl.innerText = "Verbunden!";
+                });
+        });
+
+        peer.on('connection', (conn) => {
+            dataConn = conn;
+            conn.on('data', (data) => {
+                if (data.type === 'battery') {
+                    batteryEl.classList.remove('hidden');
+                    batteryEl.innerText = `Akku: ${data.level}%`;
+                }
+            });
+        });
+
+        // Starten: Kamera + Daten Verbindung
+        startCamBtn.addEventListener('click', async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                videoEl.srcObject = stream;
+                statusEl.innerText = "Kamera bereit. Warte auf Verbindung...";
+            } catch (err) { statusEl.innerText = "Fehler: Kein Kamerazugriff."; }
+        });
+
+        connectBtn.addEventListener('click', () => {
+            const peerId = document.getElementById('peerIdInput').value;
+            if (!peerId) return;
+
+            // 1. Datenverbindung für Akku
+            dataConn = peer.connect(peerId);
+            dataConn.on('open', () => {
+                initBatteryMonitoring(dataConn);
+            });
+            dataConn.on('data', (data) => {
+                if (data.type === 'battery') {
+                    batteryEl.classList.remove('hidden');
+                    batteryEl.innerText = `Akku: ${data.level}%`;
+                }
+            });
+
+            // 2. Videoanruf starten
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                .then(stream => {
+                    const call = peer.call(peerId, stream);
+                    call.on('stream', (remoteStream) => {
+                        videoEl.srcObject = remoteStream;
+                        statusEl.innerText = "Live verbunden!";
+                    });
+                })
+                .catch(err => statusEl.innerText = "Verbindung fehlgeschlagen.");
+        });
+    </script>
+</body>
+</html>
