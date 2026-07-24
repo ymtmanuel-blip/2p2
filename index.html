@@ -2,78 +2,314 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tauben-Cam</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>P2P Cam Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body { margin: 0; background: black; overflow: hidden; font-family: sans-serif; }
+        body { margin: 0; background: #07090e; color: #e2e8f0; overflow: hidden; font-family: 'Inter', system-ui, -apple-system, sans-serif; user-select: none; }
         #remoteVideo { width: 100vw; height: 100vh; object-fit: cover; }
-        #localVideo { position: absolute; bottom: 20px; right: 20px; width: 100px; height: 150px; border: 3px solid white; border-radius: 10px; z-index: 10; }
-        #canvas { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 20; }
-        #menu { position: absolute; top: 10px; left: 10px; z-index: 30; background: rgba(0,0,0,0.7); padding: 10px; color: white; border-radius: 8px; }
+        #localVideo { display: none; }
+        
+        /* Grid overlay for CCTV feel */
+        .cctv-grid {
+            background-size: 40px 40px;
+            background-image: 
+                linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+        }
+
+        /* Continuous alarm flashing */
+        .alarm-active {
+            animation: alarmPulse 0.6s infinite alternate ease-in-out;
+        }
+        @keyframes alarmPulse {
+            0% { background-color: rgba(220, 38, 38, 0.85); box-shadow: inset 0 0 100px rgba(0,0,0,0.8); }
+            100% { background-color: rgba(127, 29, 29, 0.3); box-shadow: inset 0 0 50px rgba(255,0,0,0.5); }
+        }
+
+        .rec-dot {
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
     </style>
 </head>
-<body>
+<body class="cctv-grid h-screen w-screen relative">
 
-<div id="menu">
-    <div id="idStatus">ID laden...</div>
-    <input type="text" id="targetId" placeholder="ID eingeben" style="width:80px">
-    <button onclick="startCall()">Anrufen</button>
-</div>
+    <!-- Video Stream -->
+    <video id="remoteVideo" autoplay playsinline class="absolute inset-0 z-0"></video>
+    <video id="localVideo" autoplay playsinline muted></video>
 
-<video id="remoteVideo" autoplay playsinline></video>
-<video id="localVideo" autoplay playsinline muted></video>
-<canvas id="canvas"></canvas>
+    <!-- Overlay UI -->
+    <div class="absolute inset-0 z-10 pointer-events-none flex flex-col justify-between p-4 md:p-6">
+        
+        <!-- Header / Status Bar -->
+        <div class="flex justify-between items-start pointer-events-auto">
+            <div class="bg-slate-900/90 border border-slate-800/80 backdrop-blur-xl p-3.5 rounded-2xl shadow-2xl flex items-center gap-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-red-500 rec-dot"></span>
+                    <span class="text-xs font-black tracking-wider uppercase text-slate-300">LIVE</span>
+                </div>
+                <div class="h-4 w-[1px] bg-slate-700"></div>
+                <div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Kamera-ID</div>
+                    <div id="idDisplay" class="text-sm font-mono font-bold text-emerald-400">----</div>
+                </div>
+            </div>
 
-<script>
-    const peer = new Peer(Math.floor(1000 + Math.random() * 9000).toString());
-    const remoteVid = document.getElementById('remoteVideo');
-    const localVid = document.getElementById('localVideo');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    let seeds = [];
+            <!-- Fullscreen & Battery -->
+            <div class="flex gap-2 pointer-events-auto">
+                <button onclick="toggleFullscreen()" class="bg-slate-900/90 border border-slate-800 text-slate-300 hover:text-white p-3 rounded-2xl backdrop-blur-xl transition active:scale-95">
+                    <i class="fa-solid fa-expand text-sm"></i>
+                </button>
+            </div>
+        </div>
 
-    // Kamera starten (Selfie)
-    navigator.mediaDevices.getUserMedia({video: {facingMode: "user"}, audio: true})
-        .then(stream => localVid.srcObject = stream);
+        <!-- Center Alert Banner (Hidden by default) -->
+        <div id="alarmBanner" class="hidden pointer-events-auto self-center bg-red-600/90 border-2 border-red-400 text-white font-black px-6 py-3 rounded-2xl text-xl shadow-2xl tracking-widest flex items-center gap-3">
+            <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
+            ALARM AKTIV
+        </div>
 
-    peer.on('open', id => document.getElementById('idStatus').innerText = "Deine ID: " + id);
+        <!-- Bottom Dashboard Controls -->
+        <div class="pointer-events-auto max-w-md mx-auto w-full bg-slate-900/90 border border-slate-800/80 backdrop-blur-xl p-4 rounded-3xl shadow-2xl space-y-3">
+            
+            <!-- Connection Input (before connected) -->
+            <div id="connectRow" class="flex gap-2">
+                <input id="targetId" type="text" maxlength="4" placeholder="4-stellige ID der Tauben-Cam" class="bg-slate-950/80 border border-slate-800 text-white placeholder-slate-500 px-4 py-3 rounded-2xl text-sm font-mono w-full outline-none focus:border-emerald-500 transition">
+                <button onclick="connectToCam()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-2xl text-sm font-bold transition flex items-center gap-2 shrink-0 active:scale-95">
+                    <i class="fa-solid fa-plug"></i>
+                    Verbinden
+                </button>
+            </div>
 
-    // Anruf empfangen
-    peer.on('call', call => {
-        navigator.mediaDevices.getUserMedia({video: true, audio: true}).then(stream => {
-            call.answer(stream);
-            call.on('stream', s => remoteVid.srcObject = s);
+            <div id="statusText" class="text-xs text-center text-slate-400 font-medium">Bereit zum Verbinden...</div>
+
+            <!-- Control Buttons (Walkie Talkie & Alarm) -->
+            <div class="grid grid-cols-2 gap-3 pt-1">
+                <!-- Push to Talk -->
+                <button id="pttBtn" class="bg-slate-800 hover:bg-slate-700/80 border border-slate-700/60 active:bg-emerald-600 active:border-emerald-500 text-white py-3.5 px-4 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 select-none">
+                    <i class="fa-solid fa-microphone text-sm"></i>
+                    <span>Sprechen halten</span>
+                </button>
+
+                <!-- Alarm Toggle -->
+                <button id="alarmBtn" onclick="toggleAlarm()" class="bg-red-950/40 border border-red-900/60 text-red-400 hover:bg-red-900/40 active:bg-red-600 active:text-white py-3.5 px-4 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 select-none">
+                    <i class="fa-solid fa-bell text-sm"></i>
+                    <span id="alarmBtnText">Alarm AN</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alarm Overlay Container für Empfänger-Handy -->
+    <div id="alarmOverlay" class="hidden absolute inset-0 z-50 pointer-events-none flex items-center justify-center">
+        <div class="text-center p-8">
+            <i class="fa-solid fa-triangle-exclamation text-8xl text-white mb-4 animate-ping"></i>
+            <h1 class="text-5xl font-black text-white tracking-widest uppercase">ALARM!</h1>
+        </div>
+    </div>
+
+    <script>
+        const remoteVideo = document.getElementById('remoteVideo');
+        const localVideo = document.getElementById('localVideo');
+        const pttBtn = document.getElementById('pttBtn');
+        const alarmBtn = document.getElementById('alarmBtn');
+        const alarmBtnText = document.getElementById('alarmBtnText');
+        const alarmOverlay = document.getElementById('alarmOverlay');
+        const alarmBanner = document.getElementById('alarmBanner');
+        const statusText = document.getElementById('statusText');
+
+        let localStream = null;
+        let dataConn = null;
+        let isAlarmActive = false;
+        let alarmOscillator = null;
+        let alarmGain = null;
+        let audioCtx = null;
+
+        // Erzeuge zufällige 4-stellige ID
+        const myId = Math.floor(1000 + Math.random() * 9000).toString();
+        const peer = new Peer(myId);
+
+        peer.on('open', id => {
+            document.getElementById('idDisplay').innerText = id;
         });
-    });
 
-    // Anruf starten
-    function startCall() {
-        const id = document.getElementById('targetId').value;
-        navigator.mediaDevices.getUserMedia({video: true, audio: true}).then(stream => {
-            const call = peer.call(id, stream);
-            call.on('stream', s => remoteVid.srcObject = s);
+        // Lokales Mikrofon/Kamera initialisieren
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: true })
+            .then(stream => {
+                localStream = stream;
+                localVideo.srcObject = stream;
+                // Mikrofon standardmäßig deaktivieren
+                setAudioState(false);
+            }).catch(() => {
+                statusText.innerText = "Kamera-/Mikrofonzugriff verweigert.";
+            });
+
+        // Anrufe annehmen (Tauben-Cam Empfänger)
+        peer.on('call', call => {
+            statusText.innerText = "Verbindung aktiv (Kamera sendet)...";
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: true })
+                .then(stream => {
+                    call.answer(stream);
+                    call.on('stream', remoteStream => {
+                        remoteVideo.srcObject = remoteStream;
+                    });
+                });
         });
-    }
 
-    // Samen zeichnen
-    canvas.addEventListener('click', e => {
-        const seed = {x: e.clientX, y: e.clientY, time: Date.now()};
-        seeds.push(seed);
-        setTimeout(() => seeds = seeds.filter(s => s !== seed), 5000);
-    });
-
-    function draw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        seeds.forEach(s => {
-            ctx.fillStyle = 'yellow';
-            ctx.beginPath();
-            ctx.arc(s.x, s.y, 10, 0, Math.PI * 2);
-            ctx.fill();
+        // Datenkanal abhören
+        peer.on('connection', conn => {
+            dataConn = conn;
+            setupDataListener();
         });
-        requestAnimationFrame(draw);
-    }
-    draw();
-</script>
+
+        // Verbindungsaufbau starten
+        function connectToCam() {
+            const targetId = document.getElementById('targetId').value;
+            if(!targetId) return;
+
+            statusText.innerText = "Verbinde mit " + targetId + "...";
+
+            dataConn = peer.connect(targetId);
+            setupDataListener();
+
+            if(localStream) {
+                const call = peer.call(targetId, localStream);
+                call.on('stream', remoteStream => {
+                    remoteVideo.srcObject = remoteStream;
+                    statusText.innerText = "Erfolgreich verbunden!";
+                });
+            }
+        }
+
+        function setupDataListener() {
+            if(!dataConn) return;
+            dataConn.on('data', data => {
+                if (data.type === 'alarm') {
+                    handleAlarmState(data.active);
+                }
+            });
+        }
+
+        // Push-To-Talk Logik
+        function setAudioState(enabled) {
+            if(localStream && localStream.getAudioTracks().length > 0) {
+                localStream.getAudioTracks()[0].enabled = enabled;
+            }
+        }
+
+        const startTalking = (e) => {
+            if (e) e.preventDefault();
+            setAudioState(true);
+            pttBtn.classList.remove('bg-slate-800', 'border-slate-700/60');
+            pttBtn.classList.add('bg-emerald-600', 'border-emerald-500');
+            pttBtn.querySelector('span').innerText = "Sprechen...";
+        };
+
+        const stopTalking = (e) => {
+            if (e) e.preventDefault();
+            setAudioState(false);
+            pttBtn.classList.remove('bg-emerald-600', 'border-emerald-500');
+            pttBtn.classList.add('bg-slate-800', 'border-slate-700/60');
+            pttBtn.querySelector('span').innerText = "Sprechen halten";
+        };
+
+        pttBtn.addEventListener('mousedown', startTalking);
+        pttBtn.addEventListener('mouseup', stopTalking);
+        pttBtn.addEventListener('mouseleave', stopTalking);
+        pttBtn.addEventListener('touchstart', startTalking);
+        pttBtn.addEventListener('touchend', stopTalking);
+
+        // Durchgängige Alarm-Logik
+        function toggleAlarm() {
+            isAlarmActive = !isAlarmActive;
+            
+            if(dataConn && dataConn.open) {
+                dataConn.send({ type: 'alarm', active: isAlarmActive });
+            }
+            
+            handleAlarmState(isAlarmActive);
+        }
+
+        function handleAlarmState(active) {
+            isAlarmActive = active;
+            
+            if (active) {
+                // UI Aktualisieren
+                alarmBtn.classList.remove('bg-red-950/40', 'text-red-400');
+                alarmBtn.classList.add('bg-red-600', 'text-white');
+                alarmBtnText.innerText = "Alarm AUS";
+                alarmOverlay.classList.remove('hidden');
+                alarmOverlay.classList.add('alarm-active');
+                alarmBanner.classList.remove('hidden');
+
+                startContinuousSiren();
+            } else {
+                // UI Zurücksetzen
+                alarmBtn.classList.remove('bg-red-600', 'text-white');
+                alarmBtn.classList.add('bg-red-950/40', 'text-red-400');
+                alarmBtnText.innerText = "Alarm AN";
+                alarmOverlay.classList.add('hidden');
+                alarmOverlay.classList.remove('alarm-active');
+                alarmBanner.classList.add('hidden');
+
+                stopContinuousSiren();
+            }
+        }
+
+        // Durchgängiger Sirenen-Sound Synthesizer
+        function startContinuousSiren() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            if (alarmOscillator) stopContinuousSiren();
+
+            alarmOscillator = audioCtx.createOscillator();
+            alarmGain = audioCtx.createGain();
+
+            alarmOscillator.type = 'sawtooth';
+            
+            // Frequenz-Modulation für US-Sirenen-Sound
+            const now = audioCtx.currentTime;
+            alarmOscillator.frequency.setValueAtTime(600, now);
+            
+            // Schleife für Sirenensound
+            let isUp = true;
+            setInterval(() => {
+                if(!isAlarmActive || !alarmOscillator) return;
+                const time = audioCtx.currentTime;
+                alarmOscillator.frequency.cancelScheduledValues(time);
+                alarmOscillator.frequency.linearRampToValueAtTime(isUp ? 1200 : 500, time + 0.8);
+                isUp = !isUp;
+            }, 800);
+
+            alarmGain.gain.setValueAtTime(0.8, now);
+
+            alarmOscillator.connect(alarmGain);
+            alarmGain.connect(audioCtx.destination);
+            alarmOscillator.start();
+        }
+
+        function stopContinuousSiren() {
+            if (alarmOscillator) {
+                try {
+                    alarmOscillator.stop();
+                    alarmOscillator.disconnect();
+                } catch(e) {}
+                alarmOscillator = null;
+            }
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            } else {
+                document.exitFullscreen().catch(() => {});
+            }
+        }
+    </script>
 </body>
 </html>
+
